@@ -1,8 +1,9 @@
 # Run with:
-# $ docker-compose run --rm work
+# $ CURRY_UID=$(id -u) CURRY_GID=$(id -g) docker-compose run --rm work
 services:
   work:
     build: .
+    user: "${CURRY_UID}:${CURRY_GID}"
     working_dir: /work/
     volumes:
       - .:/work/
