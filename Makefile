@@ -5,10 +5,10 @@
 LIBNAME := curry
 
 # List of the object files that will be in the library
-LIB_OFILES := src/dummy.o
+LIB_OFILES := src/curry.o
 
 # List of test executable files. Each of these are independent.
-TEST_EFILES := test/test_dummy.elf
+TEST_EFILES :=
 TEST_OFILES := $(TEST_EFILES:.elf=.o)
 # The test runners have to be generated from the tests using unity's scripts
 TEST_RUN_OFILES := $(TEST_EFILES:.elf=_run.o)

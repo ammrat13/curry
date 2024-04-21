@@ -4,7 +4,8 @@ FROM ubuntu:22.04
 # file descriptors. Set `ulimit -n 1024`.
 RUN apt update -y && \
     apt install -y --no-install-recommends \
-        build-essential gdb valgrind bear \
+        build-essential gdb valgrind \
+        clang-format bear \
         ruby && \
     rm -rf /var/lib/apt/lists/*
 
