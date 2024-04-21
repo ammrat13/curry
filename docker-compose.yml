@@ -1,0 +1,8 @@
+# Run with:
+# $ docker-compose run --rm work
+services:
+  work:
+    build: .
+    working_dir: /work/
+    volumes:
+      - .:/work/

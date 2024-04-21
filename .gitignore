@@ -1,0 +1,8 @@
+# Ignore build files
+*.o
+*.elf
+*.a
+*_run.c
+
+# Ignore IDE files
+compile_commands.json
