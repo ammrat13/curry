@@ -6,3 +6,4 @@
 
 # Ignore IDE files
 compile_commands.json
+.cache
