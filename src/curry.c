@@ -16,13 +16,6 @@ static bool is_i32(uint64_t x) {
   return t == 0 || t == UINT64_C(0xffffffff80000000);
 };
 
-// Size of the buffer we allocate for the curried function. It has to be large
-// enough to house all the generated code given how many arguments we can take.
-//
-// Currently, we just hope this is enough. A rigorous assessment will be done
-// after we know what code we're generating.
-#define CURRY_BUF_SIZE (4096)
-
 void *curry(void *fn, size_t nargs_now, size_t nargs_later, ...) {
   // Create the `va_list` to forward to `vcurry`
   va_list args_now;
@@ -39,6 +32,10 @@ void *curry(void *fn, size_t nargs_now, size_t nargs_later, ...) {
 // sufficiently large.
 static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
                                size_t nargs_later, va_list args_now);
+// Compute an upper bound on the number of bytes that `vcurry_write_thunk` will
+// write. This has to be kept in sync with that function. TODO: Improve this
+// estimate - in theory we could duplicate the code and get an exact number.
+static size_t vcurry_estimate_thunk_size(size_t nargs_now, size_t nargs_later);
 
 void *vcurry(void *fn, size_t nargs_now, size_t nargs_later, va_list args_now) {
 
@@ -51,7 +48,8 @@ void *vcurry(void *fn, size_t nargs_now, size_t nargs_later, va_list args_now) {
 
   // Allocate a buffer to store the generated code. This has to be done with
   // `mmap` since we will be changing its permissions later.
-  uint8_t *const ret = mmap(NULL, CURRY_BUF_SIZE, PROT_READ | PROT_WRITE,
+  const size_t ret_size = vcurry_estimate_thunk_size(nargs_now, nargs_later);
+  uint8_t *const ret = mmap(NULL, ret_size, PROT_READ | PROT_WRITE,
                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (ret == MAP_FAILED)
     return NULL;
@@ -61,8 +59,8 @@ void *vcurry(void *fn, size_t nargs_now, size_t nargs_later, va_list args_now) {
 
   // Make the buffer executable, and return it. On failure, remember to free the
   // buffer.
-  if (mprotect(ret, CURRY_BUF_SIZE, PROT_READ | PROT_EXEC) == -1) {
-    munmap(ret, CURRY_BUF_SIZE);
+  if (mprotect(ret, ret_size, PROT_READ | PROT_EXEC) == -1) {
+    munmap(ret, ret_size);
     return NULL;
   }
   return ret;
@@ -181,9 +179,11 @@ static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
   // have a way to call arbitrary 64-bit addresses. Thus, we have to materialize
   // the callsite into a register, then emit an indirect call.
   cur = emit_mov_reg_imm(cur, REG_ID_RAX, (uint64_t)fn);
-  // Emit: call %rax
-  *cur++ = 0xff;
-  *cur++ = 0xd0;
+  {
+    // Emit: call %rax
+    *cur++ = 0xff;
+    *cur++ = 0xd0;
+  }
 
   // If we allocated stack space for arguments, pop them off. This resets the
   // base pointer too.
@@ -285,4 +285,8 @@ static uint8_t *emit_mov_reg_imm(uint8_t *cur, reg_id_t dst, uint64_t imm) {
     cur += 8;
   }
   return cur;
+}
+
+static size_t vcurry_estimate_thunk_size(size_t nargs_now, size_t nargs_later) {
+  return 4 + 4 + (8 + 7) * nargs_later + (10 + 8) * nargs_now + 10 + 2 + 1 + 1;
 }
