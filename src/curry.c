@@ -7,6 +7,15 @@
 #include <stdint.h>
 #include <sys/mman.h>
 
+// Utility functions for determining the size of an argument
+static bool is_u32(uint64_t x) {
+  return (x & UINT64_C(0xffffffff00000000)) == 0;
+};
+static bool is_i32(uint64_t x) {
+  const uint64_t t = x & UINT64_C(0xffffffff80000000);
+  return t == 0 || t == UINT64_C(0xffffffff80000000);
+};
+
 // Size of the buffer we allocate for the curried function. It has to be large
 // enough to house all the generated code given how many arguments we can take.
 //
@@ -83,6 +92,8 @@ static reg_id_t argidx_to_regid(size_t argidx);
 static uint8_t *emit_mov_reg_reg(uint8_t *cur, reg_id_t dst, reg_id_t src);
 // Emit: mov [%rsp + $(8 * off)], $(src)
 static uint8_t *emit_mov_rsp_reg(uint8_t *cur, size_t slot, reg_id_t src);
+// Emit: mov $(dst), [%rbp + $(8 * off + 16)]
+static uint8_t *emit_mov_reg_rbp(uint8_t *cur, reg_id_t dst, size_t slot);
 // Emit: mov $(dst), $(imm)
 static uint8_t *emit_mov_reg_imm(uint8_t *cur, reg_id_t dst, uint64_t imm);
 
@@ -109,7 +120,12 @@ static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
   // the base pointer since we'll never access the caller's stack in that case.
   if (nargs_total > 6) {
     // Number of bytes we allocate for overflow-args. Each argument is 8 bytes.
-    const size_t bytes_overflow = 8 * (nargs_total - 6);
+    // However, the stack has to be 16-byte aligned at the start of each call,
+    // so we add one slot at the end if we're short.
+    size_t bytes_overflow = 8 * (nargs_total - 6);
+    if (bytes_overflow % 16 != 0)
+      bytes_overflow += 8;
+    assert(bytes_overflow % 16 == 0 && "Stack misaligned");
     assert(bytes_overflow < UINT32_C(0x10000) && "Too many overflow-args");
     // Emit: enter $(bytes_overflow), 0
     *cur++ = 0xc8;
@@ -139,7 +155,11 @@ static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
     }
   }
 
-  // TODO: Handle later-overflow-args
+  // All of the later-overflow-args need to be copied from the stack
+  for (size_t isrc = 6; isrc < nargs_later; isrc++) {
+    cur = emit_mov_reg_rbp(cur, REG_ID_RAX, isrc - 6);
+    cur = emit_mov_rsp_reg(cur, nargs_now + isrc - 6, REG_ID_RAX);
+  }
 
   // Finally, place all the now-args by materializing them into registers or the
   // stack.
@@ -152,7 +172,8 @@ static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
       reg_id_t rid_dst = argidx_to_regid(idst);
       cur = emit_mov_reg_imm(cur, rid_dst, arg);
     } else {
-      // TODO
+      cur = emit_mov_reg_imm(cur, REG_ID_RAX, arg);
+      cur = emit_mov_rsp_reg(cur, idst - 6, REG_ID_RAX);
     }
   }
 
@@ -177,10 +198,7 @@ static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
 
 static reg_id_t argidx_to_regid(size_t argidx) {
   // Bounds checking
-  if (argidx >= 6) {
-    assert(0 && "Invalid index for register argument");
-    return REG_ID_RAX;
-  }
+  assert(argidx < 6 && "Invalid index for register argument");
   // Return from a lookup table
   const reg_id_t lut[] = {REG_ID_RDI, REG_ID_RSI, REG_ID_RDX,
                           REG_ID_RCX, REG_ID_R8,  REG_ID_R9};
@@ -221,32 +239,50 @@ static uint8_t *emit_mov_rsp_reg(uint8_t *cur, size_t slot, reg_id_t src) {
   return cur;
 }
 
+static uint8_t *emit_mov_reg_rbp(uint8_t *cur, reg_id_t dst, size_t slot) {
+  // Compute the byte offset to which we will store. Note that this will never
+  // be zero since we skip over the saved base pointer and the return address.
+  const size_t offset = 16 + 8 * slot;
+  // We have different encodings depending on whether the offset fits within an
+  // 8-bit signed integer.
+  bool small_encoding = offset < 128;
+  // The prefix is always the same. We encode the source register. The base
+  // register is always %rbp, and we never have an index.
+  *cur++ = 0x48 | ((dst >> 3) & 1) << 2;
+  *cur++ = 0x8b;
+  if (small_encoding) {
+    *cur++ = 0x45 | (dst & 7) << 3;
+    *cur++ = offset;
+  } else {
+    *cur++ = 0x85 | (dst & 7) << 3;
+    *((int32_t *)cur) = offset;
+    cur += 4;
+  }
+  return cur;
+}
+
 static uint8_t *emit_mov_reg_imm(uint8_t *cur, reg_id_t dst, uint64_t imm) {
   // TODO: Optimize. There are are lot of ways to materialize immediates into
   // registers. Ideally, we'd pick the best one.
-
-  if ((dst & 8) == 0 && imm < UINT64_C(0x100000000)) {
+  if ((dst & 8) == 0 && is_u32(imm)) {
     // If we're using a 32-bit register (high bit clear) and the immediate is
     // unsigned 32-bit, then we can use a shorter encoding.
     *cur++ = 0xb8 | (dst & 7);
     *((uint32_t *)cur) = imm & UINT32_C(0xffffffff);
     cur += 4;
-
-  } else if (imm >= UINT64_C(0xffffffff80000000)) {
+  } else if (is_i32(imm)) {
     // Otherwise, if the immediate is signed 32-bit
     *cur++ = 0x48 | ((dst >> 3) & 1) << 0;
     *cur++ = 0xc7;
     *cur++ = 0xc0 | (dst & 7);
     *((uint32_t *)cur) = imm & UINT32_C(0xffffffff);
     cur += 4;
-
   } else {
     // Just use the long encoding
-    *cur++ = 0x48 | ((dst >> 3) & 1) << 3;
+    *cur++ = 0x48 | ((dst >> 3) & 1) << 0;
     *cur++ = 0xb8 | (dst & 7);
     *((uint64_t *)cur) = imm;
     cur += 8;
   }
-
   return cur;
 }

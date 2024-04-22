@@ -10,7 +10,11 @@ LIB_DFILES := $(LIB_OFILES:.o=.d)
 LIB_CFILES := $(LIB_OFILES:.o=.c)
 
 # List of test executable files. Each of these are independent.
-TEST_EFILES := test/suite_basic.elf test/suite_overflow.elf
+TEST_EFILES := \
+	test/suite_basic.elf \
+	test/suite_size.elf \
+	test/suite_overflow.elf \
+	test/suite_chain.elf
 TEST_OFILES := $(TEST_EFILES:.elf=.o)
 TEST_DFILES := $(TEST_EFILES:.elf=.d)
 TEST_CFILES := $(TEST_EFILES:.elf=.c)
