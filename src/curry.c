@@ -30,12 +30,15 @@ void *curry(void *fn, size_t nargs_now, size_t nargs_later, ...) {
 // This function does the actual work of constructing the returned function. It
 // assumes the buffer is already allocated as writeable and that it's
 // sufficiently large.
-static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
-                               size_t nargs_later, va_list args_now);
+static void vcurry_write_thunk(uint8_t *buf, size_t buf_size, void *fn,
+                               size_t nargs_now, size_t nargs_later,
+                               va_list args_now);
 // Compute an upper bound on the number of bytes that `vcurry_write_thunk` will
 // write. This has to be kept in sync with that function. TODO: Improve this
 // estimate - in theory we could duplicate the code and get an exact number.
 static size_t vcurry_estimate_thunk_size(size_t nargs_now, size_t nargs_later);
+// Where we return to from `munmap`. It's actually some code.
+extern uint8_t vcurry_return_trampoline;
 
 void *vcurry(void *fn, size_t nargs_now, size_t nargs_later, va_list args_now) {
 
@@ -55,7 +58,7 @@ void *vcurry(void *fn, size_t nargs_now, size_t nargs_later, va_list args_now) {
     return NULL;
 
   // Actually construct the thunk
-  vcurry_write_thunk(ret, fn, nargs_now, nargs_later, args_now);
+  vcurry_write_thunk(ret, ret_size, fn, nargs_now, nargs_later, args_now);
 
   // Make the buffer executable, and return it. On failure, remember to free the
   // buffer.
@@ -95,8 +98,9 @@ static uint8_t *emit_mov_reg_rbp(uint8_t *cur, reg_id_t dst, size_t slot);
 // Emit: mov $(dst), $(imm)
 static uint8_t *emit_mov_reg_imm(uint8_t *cur, reg_id_t dst, uint64_t imm);
 
-static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
-                               size_t nargs_later, va_list args_now) {
+static void vcurry_write_thunk(uint8_t *buf, size_t buf_size, void *fn,
+                               size_t nargs_now, size_t nargs_later,
+                               va_list args_now) {
   // Compute how many arguments we have in total
   const size_t nargs_total = nargs_now + nargs_later;
   // Create a pointer we'll use to iterate over the buffer
@@ -112,22 +116,21 @@ static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
     *cur++ = 0xfa;
   }
 
-  // If we need overflow-args, allocate space for them. Also set the base
-  // pointer to be at the bottom of the stack so we can access
-  // later-overflow-args. If we have no overflow-args, it's safe to skip setting
-  // the base pointer since we'll never access the caller's stack in that case.
-  if (nargs_total > 6) {
-    // Number of bytes we allocate for overflow-args. Each argument is 8 bytes.
-    // However, the stack has to be 16-byte aligned at the start of each call,
-    // so we add one slot at the end if we're short.
-    size_t bytes_overflow = 8 * (nargs_total - 6);
-    if (bytes_overflow % 16 != 0)
-      bytes_overflow += 8;
-    assert(bytes_overflow % 16 == 0 && "Stack misaligned");
-    assert(bytes_overflow < UINT32_C(0x10000) && "Too many overflow-args");
-    // Emit: enter $(bytes_overflow), 0
+  // Allocate space on the stack for overflow args. This also pushes the base
+  // pointer onto the stack, which gives us the required alignment. For
+  // alignment, we can have an even number of slots in addition to the base
+  // pointer.
+  {
+    const size_t slots_overflow = nargs_total > 6 ? nargs_total - 6 : 0;
+    const size_t slots_padded =
+        slots_overflow % 2 == 1 ? slots_overflow + 1 : slots_overflow;
+    const size_t bytes_padded = 8 * slots_padded;
+    assert(bytes_padded % 16 == 0 && "Stack misaligned");
+    assert(bytes_padded < UINT32_C(0x10000) && "Too many overflow-args");
+    // Emit: enter $(bytes_padded), 0
+    // Pushes bytes_padded + 8 bytes onto the stack
     *cur++ = 0xc8;
-    *((uint16_t *)cur) = bytes_overflow;
+    *((uint16_t *)cur) = bytes_padded;
     cur += 2;
     *cur++ = 0x00;
   }
@@ -184,16 +187,37 @@ static void vcurry_write_thunk(uint8_t *buf, void *fn, size_t nargs_now,
     *cur++ = 0xff;
     *cur++ = 0xd0;
   }
-
-  // If we allocated stack space for arguments, pop them off. This resets the
-  // base pointer too.
-  if (nargs_total > 6) {
+  // Did that call. Now all that's left is to get back to the caller.
+  {
     // Emit: leave
     *cur++ = 0xc9;
   }
 
-  // Emit: ret
-  *cur++ = 0xc3;
+  // Currently, the return value is in %rax. We need to free this buffer though.
+  // So, push the return value onto the stack, free ourselves, and have the call
+  // return to a trampoline that restores the return value before returning. Of
+  // course, the trampoline has to be statically allocated so we don't have to
+  // free it. Additionally, the trampoline cannot rely on the stack to be
+  // aligned 8 mod 16. In fact, it will be aligned 0 mod 16.
+  {
+    // Emit: push %rax
+    *cur++ = 0x50;
+    // Emit: mov %rax, $(vcurry_return_trampoline); push %rax
+    cur = emit_mov_reg_imm(cur, REG_ID_RAX, (uint64_t)&vcurry_return_trampoline);
+    *cur++ = 0x50;
+
+    // Setup arguments for `munmap`
+    cur = emit_mov_reg_imm(cur, REG_ID_RDI, (uint64_t)buf);
+    cur = emit_mov_reg_imm(cur, REG_ID_RSI, buf_size);
+
+    // Emit: mov %rax, $(munmap); jmp %rax
+    cur = emit_mov_reg_imm(cur, REG_ID_RAX, (uint64_t)munmap);
+    *cur++ = 0xff;
+    *cur++ = 0xe0;
+  }
+
+  // Make sure we didn't overrun the buffer
+  assert((size_t)(cur - buf) <= buf_size);
 }
 
 static reg_id_t argidx_to_regid(size_t argidx) {
@@ -288,5 +312,24 @@ static uint8_t *emit_mov_reg_imm(uint8_t *cur, reg_id_t dst, uint64_t imm) {
 }
 
 static size_t vcurry_estimate_thunk_size(size_t nargs_now, size_t nargs_later) {
-  return 4 + 4 + (8 + 7) * nargs_later + (10 + 8) * nargs_now + 10 + 2 + 1 + 1;
+  size_t ret = 0;
+  // Entry stuff
+  ret += 4; // endbr64
+  ret += 4; // enter $(bytes_total), 0
+  // Setting up the arguments
+  ret += (8 + 7) * nargs_later;
+  ret += (10 + 8) * nargs_now;
+  // Calling
+  ret += 10; // mov %rax, $(fn)
+  ret += 2;  // call %rax
+  // Exit stuff
+  ret += 1;  // leave
+  ret += 1;  // push %rax
+  ret += 10; // mov %rax, $(vcurry_return_trampoline)
+  ret += 1;  // push %rax
+  ret += 10; // mov %rdi, $(buf)
+  ret += 10; // mov %rsi, $(buf_size)
+  ret += 10; // mov %rax, $(munmap)
+  ret += 2;  // jmp %rax
+  return ret;
 }

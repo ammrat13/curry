@@ -8,6 +8,9 @@ LIBNAME := curry
 LIB_OFILES := src/curry.o
 LIB_DFILES := $(LIB_OFILES:.o=.d)
 LIB_CFILES := $(LIB_OFILES:.o=.c)
+# The library has some assembly files. List them here
+SLIB_OFILES := src/curry_trampoline.o
+SLIB_SFILES := $(SLIB_OFILES:.o=.S)
 
 # List of test executable files. Each of these are independent.
 TEST_EFILES := \
@@ -36,7 +39,7 @@ all: lib$(LIBNAME).a
 clean:
 	rm -fv \
 		lib$(LIBNAME).a unity.o \
-		$(LIB_OFILES) $(LIB_DFILES) \
+		$(LIB_OFILES) $(LIB_DFILES) $(SLIB_OFILES) \
 		$(TEST_EFILES) $(TEST_OFILES) $(TEST_DFILES) \
 		$(TEST_RUN_OFILES) $(TEST_RUN_DFILES) $(TEST_RUN_CFILES)
 
@@ -53,7 +56,7 @@ format-check:
 	clang-format -n -Werror $(LIB_CFILES) $(TEST_CFILES)
 
 # The library just archives all the object files
-lib$(LIBNAME).a: $(LIB_OFILES)
+lib$(LIBNAME).a: $(LIB_OFILES) $(SLIB_OFILES)
 	$(AR) -rc $@ $^
 # Test executables must link with unity, along with their generated runner. They
 # also depend on the library itself.
@@ -68,6 +71,8 @@ unity.o: third-party/Unity/src/unity.c
 # However, we use different flags for the library and the tests
 $(LIB_OFILES): %.o: %.c
 	$(CC) $(LIB_CFLAGS) -MMD -c $< -o $@
+$(SLIB_OFILES): %.o: %.S
+	$(CC) -c $< -o $@
 $(TEST_OFILES) $(TEST_RUN_OFILES): %.o: %.c
 	$(CC) $(TEST_CFLAGS) -MMD -c $< -o $@
 
