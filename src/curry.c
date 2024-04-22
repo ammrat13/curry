@@ -48,6 +48,9 @@ void *vcurry(void *fn, size_t nargs_now, size_t nargs_later, va_list args_now) {
   // `fn` with the arguments we've already received.
   if (nargs_now == 0)
     return fn;
+  // If we have too many arguments, just fail
+  if (nargs_now + nargs_later > CURRY_MAX_ARGS)
+    return NULL;
 
   // Allocate a buffer to store the generated code. This has to be done with
   // `mmap` since we will be changing its permissions later.
@@ -243,6 +246,7 @@ static uint8_t *emit_mov_rsp_reg(uint8_t *cur, size_t slot, reg_id_t src) {
   // within an 8-bit signed integer. We can also optimize if the offset is zero.
   bool zero_encoding = slot == 0;
   bool small_encoding = slot < 128 / 8;
+  assert(slot < UINT32_C(0x0fffffff) && "Slot too large");
   // The prefix is always the same. We encode the source register. The base
   // register is always %rsp, and we never have an index.
   *cur++ = 0x48 | ((src >> 3) & 1) << 2;
@@ -268,6 +272,7 @@ static uint8_t *emit_mov_reg_rbp(uint8_t *cur, reg_id_t dst, size_t slot) {
   // Compute the byte offset to which we will store. Note that this will never
   // be zero since we skip over the saved base pointer and the return address.
   const size_t offset = 16 + 8 * slot;
+  assert(slot < UINT32_C(0x0fffffff) && "Slot too large");
   // We have different encodings depending on whether the offset fits within an
   // 8-bit signed integer.
   bool small_encoding = offset < 128;

@@ -37,3 +37,16 @@ void *curry(void *fn, size_t nargs_now, size_t nargs_later, ...);
  * \return A function pointer, or `NULL` on failure
  */
 void *vcurry(void *fn, size_t nargs_now, size_t nargs_later, va_list args_now);
+
+/**
+ * \brief Maximum number of arguments that can be curried
+ *
+ * This limit is cumulative and not individual - the sum of `nargs_now`` and
+ * `nargs_later` cannot exceed this. This bound can go higher if needed. It's
+ * bottlenecked by the stack space we can allocate with `enter`, and it's
+ * limited by the 32-bit offsets we can encode in `mov`.
+ *
+ * \see curry
+ * \see vcurry
+ */
+#define CURRY_MAX_ARGS (256)
