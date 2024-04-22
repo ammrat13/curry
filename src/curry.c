@@ -203,21 +203,39 @@ static void vcurry_write_thunk(uint8_t *buf, size_t buf_size, void *fn,
   // free it. Additionally, the trampoline cannot rely on the stack to be
   // aligned 8 mod 16. In fact, it will be aligned 0 mod 16.
   {
-    // Emit: push %rax
-    *cur++ = 0x50;
-    // Emit: mov %rax, $(vcurry_return_trampoline); push %rax
-    cur =
-        emit_mov_reg_imm(cur, REG_ID_RAX, (uint64_t)&vcurry_return_trampoline);
-    *cur++ = 0x50;
-
+    // Save the return value
+    {
+      // Emit: push %rax
+      *cur++ = 0x50;
+    }
+    // Create a fake return address for `munmap` to return from
+    {
+      // Emit: mov %rax, $(vcurry_return_trampoline)
+      cur = emit_mov_reg_imm(cur, REG_ID_RAX,
+                             (uint64_t)&vcurry_return_trampoline);
+      // Emit: push %rax
+      *cur++ = 0x50;
+    }
     // Setup arguments for `munmap`
-    cur = emit_mov_reg_imm(cur, REG_ID_RDI, (uint64_t)buf);
-    cur = emit_mov_reg_imm(cur, REG_ID_RSI, buf_size);
-
-    // Emit: mov %rax, $(munmap); jmp %rax
-    cur = emit_mov_reg_imm(cur, REG_ID_RAX, (uint64_t)munmap);
-    *cur++ = 0xff;
-    *cur++ = 0xe0;
+    {
+      // Emit: lea %rdi, $(buf)
+      *cur++ = 0x48;
+      *cur++ = 0x8d;
+      *cur++ = 0x35;
+      *((int32_t *)cur) = (int32_t)(buf - (cur + 4));
+      cur += 4;
+      assert(is_i32(buf - (cur + 4)) && "Offset too large for lea");
+      // Emit: mov %rsi, $(buf_size)
+      cur = emit_mov_reg_imm(cur, REG_ID_RSI, buf_size);
+    }
+    // Call `munmap`
+    {
+      // Emit: mov %rax, $(munmap)
+      cur = emit_mov_reg_imm(cur, REG_ID_RAX, (uint64_t)munmap);
+      // Emit: jmp *%rax
+      *cur++ = 0xff;
+      *cur++ = 0xe0;
+    }
   }
 
   // Make sure we didn't overrun the buffer
@@ -333,7 +351,7 @@ static size_t vcurry_estimate_thunk_size(size_t nargs_now, size_t nargs_later) {
   ret += 1;  // push %rax
   ret += 10; // mov %rax, $(vcurry_return_trampoline)
   ret += 1;  // push %rax
-  ret += 10; // mov %rdi, $(buf)
+  ret += 7;  // lea %rdi, [%rip + $(cur - buf)]
   ret += 10; // mov %rsi, $(buf_size)
   ret += 10; // mov %rax, $(munmap)
   ret += 2;  // jmp %rax
