@@ -203,7 +203,8 @@ static void vcurry_write_thunk(uint8_t *buf, size_t buf_size, void *fn,
     // Emit: push %rax
     *cur++ = 0x50;
     // Emit: mov %rax, $(vcurry_return_trampoline); push %rax
-    cur = emit_mov_reg_imm(cur, REG_ID_RAX, (uint64_t)&vcurry_return_trampoline);
+    cur =
+        emit_mov_reg_imm(cur, REG_ID_RAX, (uint64_t)&vcurry_return_trampoline);
     *cur++ = 0x50;
 
     // Setup arguments for `munmap`
