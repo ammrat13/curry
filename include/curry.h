@@ -37,11 +37,3 @@ void *curry(void *fn, size_t nargs_now, size_t nargs_later, ...);
  * \return A function pointer, or `NULL` on failure
  */
 void *vcurry(void *fn, size_t nargs_now, size_t nargs_later, va_list args_now);
-
-/**
- * \brief Maximum number of arguments that can be passed to `curry`
- * \details This limit applies to both `nargs_now` and `nargs_later`.
- * \see vcurry
- * \see curry
- */
-#define CURRY_NARGS_MAX (32)

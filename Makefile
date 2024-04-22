@@ -10,7 +10,7 @@ LIB_DFILES := $(LIB_OFILES:.o=.d)
 LIB_CFILES := $(LIB_OFILES:.o=.c)
 
 # List of test executable files. Each of these are independent.
-TEST_EFILES := test/suite_basic.elf
+TEST_EFILES := test/suite_basic.elf test/suite_overflow.elf
 TEST_OFILES := $(TEST_EFILES:.elf=.o)
 TEST_DFILES := $(TEST_EFILES:.elf=.d)
 TEST_CFILES := $(TEST_EFILES:.elf=.c)
@@ -24,7 +24,6 @@ TEST_RUN_CFILES := $(TEST_EFILES:.elf=_run.c)
 LIB_CFLAGS := -Wall -Wextra -Werror -Og -g -Iinclude/
 # Flags for building the tests. It links with this library.
 TEST_CFLAGS := -Wall -Wextra -Werror -Og -g -Iinclude/ -Ithird-party/Unity/src/
-TEST_LFLAGS := -L. -l$(LIBNAME)
 
 .PHONY: all
 all: lib$(LIBNAME).a
@@ -52,9 +51,10 @@ format-check:
 # The library just archives all the object files
 lib$(LIBNAME).a: $(LIB_OFILES)
 	$(AR) -rc $@ $^
-# Test executables must link with unity, along with their generated runner
-$(TEST_EFILES): %.elf: %.o %_run.o unity.o
-	$(CC) $^ -o $@ $(TEST_LFLAGS)
+# Test executables must link with unity, along with their generated runner. They
+# also depend on the library itself.
+$(TEST_EFILES): %.elf: %.o %_run.o unity.o lib$(LIBNAME).a
+	$(CC) $^ -o $@ -L. -l$(LIBNAME)
 
 # Special rule for the test framework. We don't want to be writing over their
 # repository, so we just write into our own.
