@@ -1,6 +1,9 @@
 # Disable default rules
 .SUFFIXES:
 
+# Where to install
+PREFIX ?= /usr/local/
+
 # Name of the library to build
 LIBNAME := curry
 
@@ -27,13 +30,20 @@ TEST_RUN_DFILES := $(TEST_EFILES:.elf=_run.d)
 TEST_RUN_CFILES := $(TEST_EFILES:.elf=_run.c)
 
 # Flags for building the library. The library doesn't link, so it has no linker
-# flags.
-LIB_CFLAGS := -Wall -Wextra -Werror -Og -g -Iinclude/
+# flags. Change the optimization flags depending on whether DEBUG is set.
+LIB_CFLAGS := \
+	-Wall -Wextra -Werror -Iinclude/ \
+	$(if $(findstring undefined,$(origin DEBUG)), -O2 -DNDEBUG, -Og -g)
 # Flags for building the tests. It links with this library.
 TEST_CFLAGS := -Wall -Wextra -Werror -Og -g -Iinclude/ -Ithird-party/Unity/src/
 
 .PHONY: all
 all: lib$(LIBNAME).a
+
+.PHONY: install
+install: all
+	install -D -m 644 lib$(LIBNAME).a $(PREFIX)/lib/lib$(LIBNAME).a
+	install -D -m 644 include/curry.h $(PREFIX)/include/curry.h
 
 .PHONY: clean
 clean:
